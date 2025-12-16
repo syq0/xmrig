@@ -1,0 +1,72 @@
+# This starter workflow is for a CMake project running on a single platform. There is a different starter workflow if you need cross-platform coverage.
+# See: https://github.com/actions/starter-workflows/blob/main/ci/cmake-multi-platform.yml
+name: XMRig Windows Build
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+  # 允许手动触发工作流
+  workflow_dispatch:
+
+env:
+  # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.)
+  BUILD_TYPE: Release
+
+jobs:
+  build_windows:
+    # 更改运行环境为 Windows 最新版本
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout XMRig Repository
+      uses: actions/checkout@v4
+      # 确保获取完整历史记录，以防需要版本信息
+      with:
+        submodules: true
+        fetch-depth: 0
+    # ----------------------------------------------------
+    # 步骤 1: 安装依赖 (OpenSSL)
+    # ----------------------------------------------------
+    # 使用 vcpkg 安装 OpenSSL。XMRig 的 Windows 版本需要 OpenSSL 库支持 TLS。
+    - name: Install Dependencies (OpenSSL)
+      uses: lukka/run-vcpkg@v11
+      with:
+        vcpkgArguments: openssl:x64-windows
+        # 将 vcpkg 安装目录添加到环境变量
+        vcpkgJsonFile: ${{ github.workspace }}/vcpkg.json # XMRig 仓库可能没有这个文件，但此 action 会处理
+        vcpkgGitCommitId: HEAD # 使用最新 vcpkg
+
+    # ----------------------------------------------------
+    # 步骤 2: 配置 CMake
+    # ----------------------------------------------------
+    - name: Configure CMake for MSVC
+      # 在 Windows 上，默认的 CMake 生成器是 Visual Studio，但显式指定更安全
+      run: |
+        cmake -B ${{github.workspace}}/build -G "Visual Studio 17 2022" -A x64 `
+        -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} `
+        -DWITH_HWLOC=ON ` # 确保启用 HWLOC
+        -DWITH_TLS=ON ` # 确保启用 TLS/SSL
+        -DOPENSSL_ROOT_DIR=${{ env.VCPKG_ROOT }}/installed/x64-windows
+
+    # ----------------------------------------------------
+    # 步骤 3: 编译
+    # ----------------------------------------------------
+    - name: Build XMRig
+      # 使用 --config 指定 Release 配置
+      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}}
+
+    # ----------------------------------------------------
+    # 步骤 4: 打包和上传 Artifacts
+    # ----------------------------------------------------
+    - name: Upload XMRig Executable
+      uses: actions/upload-artifact@v4
+      with:
+        name: xmrig-windows-${{ github.sha }}
+        # XMRig.exe 在 build 目录下的 Release 子目录中
+        path: ${{github.workspace}}/build/${{env.BUILD_TYPE}}/xmrig.exe
+        # 可选：设置保留时间，例如 7 天
+        retention-days: 7
+
+    # 注意：XMRig 通常不包含 CTest 测试，因此移除了 'Test' 步骤。
