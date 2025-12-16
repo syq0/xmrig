@@ -27,19 +27,19 @@ jobs:
         submodules: true
         fetch-depth: 0
     # ----------------------------------------------------
-    # 步骤 1: 安装依赖 (OpenSSL)
+    # 步骤 1: 安装依赖 (OpenSSL) - 修复 vcpkg 配置
     # ----------------------------------------------------
-    # 使用 vcpkg 安装 OpenSSL。XMRig 的 Windows 版本需要 OpenSSL 库支持 TLS。
     - name: Install Dependencies (OpenSSL)
       uses: lukka/run-vcpkg@v11
       with:
-        vcpkgArguments: openssl:x64-windows
-        # 将 vcpkg 安装目录添加到环境变量
-        vcpkgJsonFile: ${{ github.workspace }}/vcpkg.json # XMRig 仓库可能没有这个文件，但此 action 会处理
-        vcpkgGitCommitId: HEAD # 使用最新 vcpkg
+        # 使用 runVcpkgInstall 来安装特定的库
+        runVcpkgInstall: 'openssl:x64-windows'
+        # 移除 vcpkgJsonFile 和 vcpkgGitCommitId，让 Action 使用默认的 vcpkg 版本
+        # 移除 vcpkgGitCommitId，让 Action 使用默认的 vcpkg 版本
+        # 注意: XMRig 的某些版本可能需要特定的 OpenSSL 配置，但这个通用配置应该适用。
 
     # ----------------------------------------------------
-    # 步骤 2: 配置 CMake
+    # 步骤 2: 配置 CMake (调整 OpenSSL 路径)
     # ----------------------------------------------------
     - name: Configure CMake for MSVC
       # 在 Windows 上，默认的 CMake 生成器是 Visual Studio，但显式指定更安全
@@ -48,7 +48,9 @@ jobs:
         -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} `
         -DWITH_HWLOC=ON ` # 确保启用 HWLOC
         -DWITH_TLS=ON ` # 确保启用 TLS/SSL
-        -DOPENSSL_ROOT_DIR=${{ env.VCPKG_ROOT }}/installed/x64-windows
+        # vcpkg 会自动设置 CMAKE_TOOLCHAIN_FILE，但我们仍需确保 OpenSSL 路径正确
+        # vcpkg 默认将安装路径存储在环境变量 VCPKG_ROOT 中，CMake 通常会自动找到。
+        # 如果找不到，可以手动添加 -DOPENSSL_ROOT_DIR 
 
     # ----------------------------------------------------
     # 步骤 3: 编译
