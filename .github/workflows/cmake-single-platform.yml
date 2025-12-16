@@ -22,18 +22,31 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          choco install -y git --no-progress || Write-Host 'git already present'
+          choco install -y 7zip --no-progress || Write-Host '7zip already present'
           choco install -y cmake --no-progress || Write-Host 'cmake already present'
-          # Add other packages if your build needs them, e.g. openssl, 7zip, etc.
 
-      - name: Configure (CMake)
+      - name: Setup vcpkg and install libraries (libuv, openssl)
         shell: pwsh
         run: |
-          # Configure for x64 Release. Adjust -D flags as needed for xmrig.
-          cmake -S . -B build -A x64 -DCMAKE_BUILD_TYPE=$env:BUILD_TYPE -DWITH_HWLOC=ON -DWITH_OPENSSL=ON
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git vcpkg
+          .\vcpkg\bootstrap-vcpkg.bat
+          # install x64-windows variants used by MSVC x64 build
+          .\vcpkg\vcpkg.exe install libuv:x64-windows openssl:x64-windows
+          .\vcpkg\vcpkg.exe integrate install
+
+      - name: Configure (CMake) using vcpkg toolchain
+        shell: pwsh
+        run: |
+          $vcpkgToolchain = (Resolve-Path .\vcpkg\scripts\buildsystems\vcpkg.cmake).Path
+          Write-Host "Using vcpkg toolchain: $vcpkgToolchain"
+          # Use WITH_HWLOC=OFF on Windows unless you explicitly add hwloc via vcpkg
+          cmake -S . -B build -A x64 -DCMAKE_BUILD_TYPE=$env:BUILD_TYPE -DCMAKE_TOOLCHAIN_FILE="$vcpkgToolchain" -DWITH_HWLOC=OFF -DWITH_OPENSSL=ON
+
       - name: Build (MSBuild/CMake)
         shell: pwsh
         run: |
-          cmake --build build --config ${env:BUILD_TYPE} -- /m
+          cmake --build build --config $env:BUILD_TYPE -- /m
 
       - name: Prepare dist folder and collect artifacts
         shell: pwsh
@@ -45,7 +58,6 @@ jobs:
           # Try to find built executables (adjust pattern if your target binary name differs)
           $bins = Get-ChildItem -Path build -Filter '*.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
           if (-not $bins) {
-            # fallback: include entire build output
             Write-Host "No exe found under build/, will package whole build folder."
             $bins = Get-ChildItem -Path build -Recurse | Select-Object -ExpandProperty FullName
           }
@@ -59,11 +71,9 @@ jobs:
           $all = $bins + $extras
           $zipPath = Join-Path -Path (Resolve-Path dist) -ChildPath "$name.zip"
 
-          # Compress-Archive may fail if files list is empty — handle accordingly
           if ($all) {
             Compress-Archive -Path $all -DestinationPath $zipPath -Force
           } else {
-            # create empty zip of build folder
             Compress-Archive -Path build\* -DestinationPath $zipPath -Force
           }
 
