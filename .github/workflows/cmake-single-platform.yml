@@ -29,9 +29,7 @@ jobs:
         shell: pwsh
         run: |
           # Configure for x64 Release. Adjust -D flags as needed for xmrig.
-          cmake -S . -B build -A x64 -DCMAKE_BUILD_TYPE=${env:BUILD_TYPE} `
-            -DWITH_HWLOC=ON -DWITH_OPENSSL=ON
-
+          cmake -S . -B build -A x64 -DCMAKE_BUILD_TYPE=$env:BUILD_TYPE -DWITH_HWLOC=ON -DWITH_OPENSSL=ON
       - name: Build (MSBuild/CMake)
         shell: pwsh
         run: |
