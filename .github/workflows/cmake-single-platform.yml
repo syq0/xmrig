@@ -1,74 +1,92 @@
-# This starter workflow is for a CMake project running on a single platform. There is a different starter workflow if you need cross-platform coverage.
-# See: https://github.com/actions/starter-workflows/blob/main/ci/cmake-multi-platform.yml
-name: XMRig Windows Build
-
+# Windows x64 only — build + package + create draft Release
+# Trigger: push tag like v1.2.3
 on:
   push:
-    branches: [ "master" ]
-  pull_request:
-    branches: [ "master" ]
-  # 允许手动触发工作流
-  workflow_dispatch:
+    tags:
+      - 'v*'
 
 env:
-  # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.)
   BUILD_TYPE: Release
 
 jobs:
-  build_windows:
-    # 更改运行环境为 Windows 最新版本
+  build-and-release:
+    name: Build & Release (windows-x64)
     runs-on: windows-latest
-
+    env:
+      VERSION: ${{ github.ref_name }}
     steps:
-    - name: Checkout XMRig Repository
-      uses: actions/checkout@v4
-      # 确保获取完整历史记录，以防需要版本信息
-      with:
-        submodules: true
-        fetch-depth: 0
-    # ----------------------------------------------------
-    # 步骤 1: 安装依赖 (OpenSSL) - 修复 vcpkg 配置
-    # ----------------------------------------------------
-    - name: Install Dependencies (OpenSSL)
-      uses: lukka/run-vcpkg@v11
-      with:
-        # 使用 runVcpkgInstall 来安装特定的库
-        runVcpkgInstall: 'openssl:x64-windows'
-        # 移除 vcpkgJsonFile 和 vcpkgGitCommitId，让 Action 使用默认的 vcpkg 版本
-        # 移除 vcpkgGitCommitId，让 Action 使用默认的 vcpkg 版本
-        # 注意: XMRig 的某些版本可能需要特定的 OpenSSL 配置，但这个通用配置应该适用。
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    # ----------------------------------------------------
-    # 步骤 2: 配置 CMake (调整 OpenSSL 路径)
-    # ----------------------------------------------------
-    - name: Configure CMake for MSVC
-      # 在 Windows 上，默认的 CMake 生成器是 Visual Studio，但显式指定更安全
-      run: |
-        cmake -B ${{github.workspace}}/build -G "Visual Studio 17 2022" -A x64 `
-        -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} `
-        -DWITH_HWLOC=ON ` # 确保启用 HWLOC
-        -DWITH_TLS=ON ` # 确保启用 TLS/SSL
-        # vcpkg 会自动设置 CMAKE_TOOLCHAIN_FILE，但我们仍需确保 OpenSSL 路径正确
-        # vcpkg 默认将安装路径存储在环境变量 VCPKG_ROOT 中，CMake 通常会自动找到。
-        # 如果找不到，可以手动添加 -DOPENSSL_ROOT_DIR 
+      - name: Install prerequisites (choco)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install -y cmake --no-progress || Write-Host 'cmake already present'
+          # Add other packages if your build needs them, e.g. openssl, 7zip, etc.
 
-    # ----------------------------------------------------
-    # 步骤 3: 编译
-    # ----------------------------------------------------
-    - name: Build XMRig
-      # 使用 --config 指定 Release 配置
-      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}}
+      - name: Configure (CMake)
+        shell: pwsh
+        run: |
+          # Configure for x64 Release. Adjust -D flags as needed for xmrig.
+          cmake -S . -B build -A x64 -DCMAKE_BUILD_TYPE=${env:BUILD_TYPE} `
+            -DWITH_HWLOC=ON -DWITH_OPENSSL=ON
 
-    # ----------------------------------------------------
-    # 步骤 4: 打包和上传 Artifacts
-    # ----------------------------------------------------
-    - name: Upload XMRig Executable
-      uses: actions/upload-artifact@v4
-      with:
-        name: xmrig-windows-${{ github.sha }}
-        # XMRig.exe 在 build 目录下的 Release 子目录中
-        path: ${{github.workspace}}/build/${{env.BUILD_TYPE}}/xmrig.exe
-        # 可选：设置保留时间，例如 7 天
-        retention-days: 7
+      - name: Build (MSBuild/CMake)
+        shell: pwsh
+        run: |
+          cmake --build build --config ${env:BUILD_TYPE} -- /m
 
-    # 注意：XMRig 通常不包含 CTest 测试，因此移除了 'Test' 步骤。
+      - name: Prepare dist folder and collect artifacts
+        shell: pwsh
+        run: |
+          $version = if ($env:VERSION) { $env:VERSION } else { 'unknown' }
+          $name = "xmrig-$version-windows-x64"
+          New-Item -Path dist -ItemType Directory -Force | Out-Null
+
+          # Try to find built executables (adjust pattern if your target binary name differs)
+          $bins = Get-ChildItem -Path build -Filter '*.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+          if (-not $bins) {
+            # fallback: include entire build output
+            Write-Host "No exe found under build/, will package whole build folder."
+            $bins = Get-ChildItem -Path build -Recurse | Select-Object -ExpandProperty FullName
+          }
+
+          # Include LICENSE/README if present at repo root
+          $extras = @()
+          foreach ($f in @('LICENSE','LICENSE.txt','README.md','config.json')) {
+            if (Test-Path $f) { $extras += (Resolve-Path $f).Path }
+          }
+
+          $all = $bins + $extras
+          $zipPath = Join-Path -Path (Resolve-Path dist) -ChildPath "$name.zip"
+
+          # Compress-Archive may fail if files list is empty — handle accordingly
+          if ($all) {
+            Compress-Archive -Path $all -DestinationPath $zipPath -Force
+          } else {
+            # create empty zip of build folder
+            Compress-Archive -Path build\* -DestinationPath $zipPath -Force
+          }
+
+          Write-Host "Created: $zipPath"
+          Get-ChildItem dist | Write-Host
+
+      - name: Upload build artifact (for debug / downloads)
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64-build
+          path: dist/*
+
+      - name: Create draft GitHub Release and attach assets
+        # draft: true to avoid immediate public publish; change to false to auto-publish
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          body: |
+            Release built by CI (windows-x64). Attachments included.
+          draft: true
+          artifacts: dist/* 
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
