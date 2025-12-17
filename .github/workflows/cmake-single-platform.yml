@@ -31,7 +31,7 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/microsoft/vcpkg.git vcpkg
           .\vcpkg\bootstrap-vcpkg.bat
-          # install x64-windows variants used by MSVC x64 build
+          # 使用动态 triplet（x64-windows），生成 uv.dll 等动态库
           .\vcpkg\vcpkg.exe install libuv:x64-windows openssl:x64-windows
           .\vcpkg\vcpkg.exe integrate install
 
@@ -40,42 +40,58 @@ jobs:
         run: |
           $vcpkgToolchain = (Resolve-Path .\vcpkg\scripts\buildsystems\vcpkg.cmake).Path
           Write-Host "Using vcpkg toolchain: $vcpkgToolchain"
-          # Use WITH_HWLOC=OFF on Windows unless you explicitly add hwloc via vcpkg
-          cmake -S . -B build -A x64 -DCMAKE_BUILD_TYPE=$env:BUILD_TYPE -DCMAKE_TOOLCHAIN_FILE="$vcpkgToolchain" -DWITH_HWLOC=OFF -DWITH_OPENSSL=ON
+          cmake -S . -B build -A x64 -DCMAKE_BUILD_TYPE=$env:BUILD_TYPE -DCMAKE_TOOLCHAIN_FILE="$vcpkgToolchain" -DVCPKG_TARGET_TRIPLET=x64-windows -DWITH_HWLOC=OFF -DWITH_OPENSSL=ON
 
       - name: Build (MSBuild/CMake)
         shell: pwsh
         run: |
           cmake --build build --config $env:BUILD_TYPE -- /m
 
-      - name: Prepare dist folder and collect artifacts
+      - name: Prepare dist folder and collect artifacts (include vcpkg dlls)
         shell: pwsh
         run: |
           $version = if ($env:VERSION) { $env:VERSION } else { 'unknown' }
           $name = "xmrig-$version-windows-x64"
           New-Item -Path dist -ItemType Directory -Force | Out-Null
 
-          # Try to find built executables (adjust pattern if your target binary name differs)
+          # 找到编译出的 exe（可根据目标名调整）
           $bins = Get-ChildItem -Path build -Filter '*.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
           if (-not $bins) {
             Write-Host "No exe found under build/, will package whole build folder."
             $bins = Get-ChildItem -Path build -Recurse | Select-Object -ExpandProperty FullName
           }
 
-          # Include LICENSE/README if present at repo root
+          # repo 根的额外文件
           $extras = @()
           foreach ($f in @('LICENSE','LICENSE.txt','README.md','config.json')) {
             if (Test-Path $f) { $extras += (Resolve-Path $f).Path }
           }
 
-          $all = $bins + $extras
-          $zipPath = Join-Path -Path (Resolve-Path dist) -ChildPath "$name.zip"
-
-          if ($all) {
-            Compress-Archive -Path $all -DestinationPath $zipPath -Force
-          } else {
-            Compress-Archive -Path build\* -DestinationPath $zipPath -Force
+          # 把 vcpkg 安装目录下的 DLL 一并收集（x64-windows 动态库）
+          $vcpkgDlls = @()
+          $vcpkgBin = Join-Path $PWD "vcpkg\installed\x64-windows\bin"
+          if (Test-Path $vcpkgBin) {
+            $vcpkgDlls = Get-ChildItem -Path $vcpkgBin -Filter '*.dll' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
           }
+
+          # 有些库把 DLL 放到 libexec 或 tools 子目录，额外尝试查找
+          $extraBins = Get-ChildItem -Path (Join-Path $PWD "vcpkg\installed\x64-windows") -Recurse -Include '*.dll' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+          if ($extraBins) { $vcpkgDlls += $extraBins }
+
+          # 将 DLL 以及 exe/其它文件复制到 dist/flat 目录（便于运行和打包）
+          $flatDir = Join-Path (Resolve-Path .\dist).Path "package"
+          if (Test-Path $flatDir) { Remove-Item $flatDir -Recurse -Force }
+          New-Item -Path $flatDir -ItemType Directory -Force | Out-Null
+
+          foreach ($file in $bins + $extras + $vcpkgDlls | Select-Object -Unique) {
+            if (Test-Path $file) {
+              Copy-Item -Path $file -Destination $flatDir -Force
+            }
+          }
+
+          # 如果你希望把 exe 放在子目录（比如 bin/），可以在这里调整结构
+          $zipPath = Join-Path -Path (Resolve-Path dist) -ChildPath "$name.zip"
+          Compress-Archive -Path (Join-Path $flatDir '*') -DestinationPath $zipPath -Force
 
           Write-Host "Created: $zipPath"
           Get-ChildItem dist | Write-Host
