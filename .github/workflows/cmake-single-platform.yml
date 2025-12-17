@@ -40,7 +40,8 @@ jobs:
         run: |
           $vcpkgToolchain = (Resolve-Path .\vcpkg\scripts\buildsystems\vcpkg.cmake).Path
           Write-Host "Using vcpkg toolchain: $vcpkgToolchain"
-          cmake -S . -B build -A x64 -DCMAKE_BUILD_TYPE=$env:BUILD_TYPE -DCMAKE_TOOLCHAIN_FILE="$vcpkgToolchain" -DVCPKG_TARGET_TRIPLET=x64-windows -DWITH_HWLOC=OFF -DWITH_OPENSSL=ON
+          # 强制使用 Release 配置的 MSVC 运行时（非 Debug）
+          cmake -S . -B build -A x64 -DCMAKE_BUILD_TYPE=$env:BUILD_TYPE -DCMAKE_TOOLCHAIN_FILE="$vcpkgToolchain" -DVCPKG_TARGET_TRIPLET=x64-windows -DWITH_HWLOC=OFF -DWITH_OPENSSL=ON -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL
 
       - name: Build (MSBuild/CMake)
         shell: pwsh
@@ -78,15 +79,17 @@ jobs:
           $extraBins = Get-ChildItem -Path (Join-Path $PWD "vcpkg\installed\x64-windows") -Recurse -Include '*.dll' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
           if ($extraBins) { $vcpkgDlls += $extraBins }
 
+          # 过滤掉明显的 Debug DLL（名称以 d.dll 结尾），避免把 debug 依赖打包进 release
+          $vcpkgDlls = $vcpkgDlls | Where-Object { $_ -notmatch '[dD]\.dll$' }
+
           # 将 DLL 以及 exe/其它文件复制到 dist/flat 目录（便于运行和打包）
           $flatDir = Join-Path (Resolve-Path .\dist).Path "package"
           if (Test-Path $flatDir) { Remove-Item $flatDir -Recurse -Force }
           New-Item -Path $flatDir -ItemType Directory -Force | Out-Null
 
-          foreach ($file in $bins + $extras + $vcpkgDlls | Select-Object -Unique) {
-            if (Test-Path $file) {
-              Copy-Item -Path $file -Destination $flatDir -Force
-            }
+          $filesToCopy = ($bins + $extras + $vcpkgDlls) | Select-Object -Unique | Where-Object { Test-Path $_ }
+          foreach ($file in $filesToCopy) {
+            Copy-Item -Path $file -Destination $flatDir -Force
           }
 
           # 如果你希望把 exe 放在子目录（比如 bin/），可以在这里调整结构
