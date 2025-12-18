@@ -41,7 +41,7 @@ jobs:
           $vcpkgToolchain = (Resolve-Path .\vcpkg\scripts\buildsystems\vcpkg.cmake).Path
           Write-Host "Using vcpkg toolchain: $vcpkgToolchain"
           # 强制使用 Release 配置的 MSVC 运行时（非 Debug）
-          cmake -S . -B build -A x64 -DCMAKE_BUILD_TYPE=$env:BUILD_TYPE -DCMAKE_TOOLCHAIN_FILE="$vcpkgToolchain" -DVCPKG_TARGET_TRIPLET=x64-windows -DWITH_HWLOC=OFF -DWITH_OPENSSL=ON -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL
+          cmake -S . -B build -A x64 -DCMAKE_BUILD_TYPE=$env:BUILD_TYPE -DCMAKE_TOOLCHAIN_FILE="$vcpkgToolchain" -DVCPKG_TARGET_TRIPLET=x64-windows -DWITH_HWLOC=OFF -DWITH_OPENSSL=ON -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL -DCMAKE_CXX_FLAGS_RELEASE="/O2 /MD"
 
       - name: Build (MSBuild/CMake)
         shell: pwsh
