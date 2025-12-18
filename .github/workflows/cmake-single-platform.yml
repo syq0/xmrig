@@ -48,56 +48,68 @@ jobs:
         run: |
           cmake --build build --config $env:BUILD_TYPE -- /m
 
-      - name: Prepare dist folder and collect artifacts (include vcpkg dlls)
+      - name:  Prepare dist folder and collect artifacts
         shell: pwsh
         run: |
           $version = if ($env:VERSION) { $env:VERSION } else { 'unknown' }
           $name = "xmrig-$version-windows-x64"
           New-Item -Path dist -ItemType Directory -Force | Out-Null
-
-          # 找到编译出的 exe（可根据目标名调整）
+      
+          # 收集 exe
           $bins = Get-ChildItem -Path build -Filter '*.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
-          if (-not $bins) {
-            Write-Host "No exe found under build/, will package whole build folder."
-            $bins = Get-ChildItem -Path build -Recurse | Select-Object -ExpandProperty FullName
-          }
-
-          # repo 根的额外文件
+      
+          # 仓库根的额外文件
           $extras = @()
           foreach ($f in @('LICENSE','LICENSE.txt','README.md','config.json')) {
             if (Test-Path $f) { $extras += (Resolve-Path $f).Path }
           }
-
-          # 把 vcpkg 安装目录下的 DLL 一并收集（x64-windows 动态库）
-          $vcpkgDlls = @()
+      
+          # 收集 vcpkg DLL - 仅 Release 版本
           $vcpkgBin = Join-Path $PWD "vcpkg\installed\x64-windows\bin"
+          $vcpkgDlls = @()
+          
           if (Test-Path $vcpkgBin) {
-            $vcpkgDlls = Get-ChildItem -Path $vcpkgBin -Filter '*.dll' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+            $vcpkgDlls = Get-ChildItem -Path $vcpkgBin -Filter '*.dll' -ErrorAction SilentlyContinue | 
+              Where-Object { 
+                # 排除所有 Debug 相关 DLL
+                $name = $_.Name
+                $name -notmatch 'D\. dll$' -and `           # 排除 *d.dll
+                $name -notmatch 'debug' -and `             # 排除 *debug*
+                $name -notmatch 'VCRUNTIME140D' -and `     # 明确排除 Debug 运行时
+                $name -notmatch 'MSVCP.*D\. dll' `          # 排除 Debug C++ 库
+              } | Select-Object -ExpandProperty FullName
           }
-
-          # 有些库把 DLL 放到 libexec 或 tools 子目录，额外尝试查找
-          $extraBins = Get-ChildItem -Path (Join-Path $PWD "vcpkg\installed\x64-windows") -Recurse -Include '*.dll' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
-          if ($extraBins) { $vcpkgDlls += $extraBins }
-
-          # 过滤掉明显的 Debug DLL（名称以 d.dll 结尾），避免把 debug 依赖打包进 release
-          $vcpkgDlls = $vcpkgDlls | Where-Object { $_ -notmatch '[dD]\.dll$' }
-
-          # 将 DLL 以及 exe/其它文件复制到 dist/flat 目录（便于运行和打包）
+      
+          # 递归查找其他位置的 DLL（但仍然过滤 Debug）
+          $allDlls = Get-ChildItem -Path (Join-Path $PWD "vcpkg\installed\x64-windows") `
+            -Recurse -Include '*.dll' -ErrorAction SilentlyContinue | 
+            Where-Object {
+              $_.Name -notmatch 'D\.dll$' -and `
+              $_.Name -notmatch 'debug' -and `
+              $_.Name -notmatch 'VCRUNTIME140D' -and `
+              $_.Name -notmatch 'MSVCP.*D\.dll'
+            } | Select-Object -ExpandProperty FullName
+          
+          $vcpkgDlls += $allDlls
+          $vcpkgDlls = $vcpkgDlls | Select-Object -Unique
+      
+          # 打包
           $flatDir = Join-Path (Resolve-Path .\dist).Path "package"
           if (Test-Path $flatDir) { Remove-Item $flatDir -Recurse -Force }
           New-Item -Path $flatDir -ItemType Directory -Force | Out-Null
-
+      
           $filesToCopy = ($bins + $extras + $vcpkgDlls) | Select-Object -Unique | Where-Object { Test-Path $_ }
           foreach ($file in $filesToCopy) {
             Copy-Item -Path $file -Destination $flatDir -Force
           }
-
-          # 如果你希望把 exe 放在子目录（比如 bin/），可以在这里调整结构
+      
+          # 日志输出（用于调试）
+          Write-Host "=== 复制的 DLL 列表 ==="
+          $vcpkgDlls | ForEach-Object { Write-Host $_ }
+      
           $zipPath = Join-Path -Path (Resolve-Path dist) -ChildPath "$name.zip"
           Compress-Archive -Path (Join-Path $flatDir '*') -DestinationPath $zipPath -Force
-
           Write-Host "Created: $zipPath"
-          Get-ChildItem dist | Write-Host
 
       - name: Upload build artifact (for debug / downloads)
         uses: actions/upload-artifact@v4
