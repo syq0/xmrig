@@ -1,0 +1,43 @@
+rm -r -fo build
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD_LIBRARIES="-lltdl -lole32 -luuid"
+cmake --build build
+
+# 彻底删除旧的构建目录
+rm -r -fo build
+
+# 重新配置，手动补齐所有缺失的静态依赖
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD_LIBRARIES="-lltdl -lole32 -luuid -lshell32"
+
+经过之前的几次尝试，你已经摸清楚了在 Windows (MSYS2) 环境下全静态编译 XMRig 的所有大坑。为了让你拥有一个干净、可重复的编译环境，我为你理清了最终的正确流程。这个流程的核心在于：手动补齐静态链接所需的级联依赖库。第一步：准备基础环境确保你的 MSYS2 (MinGW64) 中已经安装了所有必要的开发工具和库。在 MSYS2 MinGW 64-bit 终端中运行：Bash# 更新系统
+pacman -Syu
+
+# 安装基础编译套件
+pacman -S git cmake ninja mingw-w64-x86_64-gcc
+
+# 安装 XMRig 必须的依赖库
+pacman -S mingw-w64-x86_64-uv mingw-w64-x86_64-openssl mingw-w64-x86_64-hwloc
+
+# 安装 之前报错缺少的静态依赖库
+pacman -S mingw-w64-x86_64-libtool  # 对应 -lltdl
+第二步：清理与配置（核心步骤）这一步是解决“链接报错”的关键。我们通过 CMAKE_CXX_STANDARD_LIBRARIES 强制告诉编译器在最后阶段去哪里找那些“失踪”的函数。在 XMRig 源码根目录下执行：PowerShell# 1. 彻底删除之前的错误缓存（非常重要，否则配置不生效）
+rm -r -fo build
+
+# 2. 重新配置 CMake
+# 注意：我们手动添加了 -lltdl (解决hwloc报错) 和 -lole32 -luuid (解决Windows系统功能报错)
+cmake -S . -B build -G Ninja `
+  -DCMAKE_BUILD_TYPE=Release `
+  -DCMAKE_CXX_STANDARD_LIBRARIES="-lltdl -lole32 -luuid -lshell32"
+第三步：编译与验证PowerShell# 执行编译
+cmake --build build
+总结：为什么这个流程能成功？这个流程理顺了静态链接的**“依赖链条”**。
+你可以通过下表看清每一项参数解决的具体问题：
+缺失的符号 (报错内容),所属库文件,编译参数,作用描述
+"lt_dlopenext, lt_dlsym",libltdl,-lltdl,让 HWLOC 能够静态加载驱动插件
+"CoInitializeEx, CoCreateInstance",ole32,-lole32,支持 Windows 任务栏进度条显示
+CoTaskMemFree,ole32,-lole32,支持 libuv 在 Windows 下的内存管理
+GUID_...,uuid,-luuid,配合 COM 组件使用的全局唯一标识符库
+__imp_Shell_NotifyIcon,shell32,-lshell32,支持系统托盘图标功能
+编译后的检查建议
+编译完成后，你可以运行以下命令检查生成的 xmrig.exe 是否依赖外部 DLL：PowerShell# 在 MSYS2 终端中运行
+ldd build/xmrig.exe
+如果输出结果中不包含 /mingw64/bin/ 目录下的非系统 DLL（例如不包含 libuv.dll 或 libhwloc.dll），那么恭喜你，你已经成功编译出了一个完美的、自包含的绿色版 XMRig。如果现在运行 cmake --build build 依然有报错，请把最后几行报错贴出来，我带你解决最后的一丁点余留问题！
